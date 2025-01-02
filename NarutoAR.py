@@ -17,7 +17,7 @@ class NarutoAR:
         self.model = YOLO('models/yolo11s.pt')
 
         # Imagem da pose
-        self.pose_images = ['assets/images/naruto-pose.png', 'assets/images/gaara-pose.png','assets/images/lee-pose.png']
+        self.pose_images = ['assets/images/naruto-pose.png', 'assets/images/gaara-pose.png','assets/images/lee-pose.png','assets/images/guy-pose.png', 'assets/images/chidori-pose.png']
         self.pose_image = cv2.imread(self.pose_images[0], cv2.IMREAD_UNCHANGED)
 
     def calculate_distance(self, p1, p2):
@@ -227,10 +227,14 @@ class NarutoAR:
                 pose_image = self.resize_image(self.pose_image, cords)
                 self.overlay_pose_image(frame, pose_image, cords)
 
-            # elif self.is_guy_sensei_thumbs_up(results.pose_landmarks):
-            #     pass
-            # elif self.is_chidori_pose(results.pose_landmarks):
-            #     pass
+            elif self.is_guy_sensei_thumbs_up(results.pose_landmarks):
+                self.pose_image = cv2.imread(self.pose_images[3], cv2.IMREAD_UNCHANGED)
+                pose_image = self.resize_image(self.pose_image, cords)
+                self.overlay_pose_image(frame, pose_image, cords)
+            elif self.is_chidori_pose(results.pose_landmarks):
+                self.pose_image = cv2.imread(self.pose_images[4], cv2.IMREAD_UNCHANGED)
+                pose_image = self.resize_image(self.pose_image, cords)
+                self.overlay_pose_image(frame, pose_image, cords)
             elif self.is_lee_pose(results.pose_landmarks):
                 
                 self.pose_image = cv2.imread(self.pose_images[2], cv2.IMREAD_UNCHANGED)
