@@ -3,11 +3,14 @@ import mediapipe
 import numpy as np
 import math
 from ultralytics import YOLO
+import time
 
 class NarutoAR:
     def __init__(self):
         self.cap = cv2.VideoCapture(0)
 
+
+        
         # MediaPipe Pose
         self.mp_pose = mediapipe.solutions.pose
         self.pose = self.mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
@@ -19,6 +22,16 @@ class NarutoAR:
         # Imagem da pose
         self.pose_images = ['assets/images/naruto-pose.png', 'assets/images/gaara-pose.png','assets/images/lee-pose.png','assets/images/guy-pose.png', 'assets/images/chidori-pose.png']
         self.pose_image = cv2.imread(self.pose_images[0], cv2.IMREAD_UNCHANGED)
+
+        #Videos para overlay
+        self.videos = [cv2.VideoCapture('assets/videos/naruto-gif.gif'), cv2.VideoCapture('assets/videos/gaara-gif.gif'), cv2.VideoCapture('assets/videos/lee-gif.gif'), cv2.VideoCapture('assets/videos/guy-gif.gif'), cv2.VideoCapture('assets/videos/chidori-gif.gif')]
+        
+        self.video = self.videos[0]
+
+        #Video Normalizing
+        self.fps = self.video.get(cv2.CAP_PROP_FPS)
+        self.frame_time = 1 / self.fps
+
 
     def calculate_distance(self, p1, p2):
         """
@@ -219,30 +232,210 @@ class NarutoAR:
             # Desenhar as landmarks da pose
             #self.mp_drawing.draw_landmarks(frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
             if self.is_naruto_pose(results.pose_landmarks):
-                self.pose_image = cv2.imread(self.pose_images[0], cv2.IMREAD_UNCHANGED)
-                pose_image = self.resize_image(self.pose_image, cords)
-                self.overlay_pose_image(frame, pose_image, cords)
-            elif self.is_crossed_arms_pose(results.pose_landmarks):
-                self.pose_image = cv2.imread(self.pose_images[1], cv2.IMREAD_UNCHANGED)
-                pose_image = self.resize_image(self.pose_image, cords)
-                self.overlay_pose_image(frame, pose_image, cords)
+                self.video = self.videos[0]
+                if not self.video.isOpened():
+                    print("Erro: Arquivo de vídeo não aberto.")
+                    return frame
 
+                # Resetar para o primeiro quadro do GIF, se necessário
+                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+                start_time = time.time()  # Marcar o tempo inicial
+
+                while True:
+                    ret_vid, frame_vid = self.video.read()
+                    if ret_vid:
+                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
+                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
+
+                        # Mesclar o quadro do GIF com o da câmera
+                        alpha = 0.6  # Ajuste de transparência
+                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
+
+                        # Exibir o quadro combinado
+                        cv2.imshow('Naruto AR', blended_frame)
+
+                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
+                        elapsed_time = time.time() - start_time
+                        time_to_wait = max(0, self.frame_time - elapsed_time)
+                        time.sleep(time_to_wait)
+
+                        start_time = time.time()  # Atualizar o tempo inicial
+
+                        # Interromper o loop ao pressionar 'q'
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                    else:
+                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
+                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        break
+
+                cv2.destroyAllWindows()
             elif self.is_guy_sensei_thumbs_up(results.pose_landmarks):
-                self.pose_image = cv2.imread(self.pose_images[3], cv2.IMREAD_UNCHANGED)
-                pose_image = self.resize_image(self.pose_image, cords)
-                self.overlay_pose_image(frame, pose_image, cords)
-            elif self.is_chidori_pose(results.pose_landmarks):
-                self.pose_image = cv2.imread(self.pose_images[4], cv2.IMREAD_UNCHANGED)
-                pose_image = self.resize_image(self.pose_image, cords)
-                self.overlay_pose_image(frame, pose_image, cords)
-            elif self.is_lee_pose(results.pose_landmarks):
-                
-                self.pose_image = cv2.imread(self.pose_images[2], cv2.IMREAD_UNCHANGED)
-                pose_image = self.resize_image(self.pose_image, cords)
-                self.overlay_pose_image(frame, pose_image, cords)
+                self.video = self.videos[3]
+                # Verificar se o vídeo foi carregado corretamente
+                if not self.video.isOpened():
+                    print("Erro: Arquivo de vídeo não aberto.")
+                    return frame
 
-                cv2.putText(frame, 'Pose Lee (Karate Kid) Detectada!', (10, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                # Resetar para o primeiro quadro do GIF, se necessário
+                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+                start_time = time.time()  # Marcar o tempo inicial
+
+                while True:
+                    ret_vid, frame_vid = self.video.read()
+                    if ret_vid:
+                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
+                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
+
+                        # Mesclar o quadro do GIF com o da câmera
+                        alpha = 0.6  # Ajuste de transparência
+                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
+
+                        # Exibir o quadro combinado
+                        cv2.imshow('Naruto AR', blended_frame)
+
+                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
+                        elapsed_time = time.time() - start_time
+                        time_to_wait = max(0, self.frame_time - elapsed_time)
+                        time.sleep(time_to_wait)
+
+                        start_time = time.time()  # Atualizar o tempo inicial
+
+                        # Interromper o loop ao pressionar 'q'
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                    else:
+                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
+                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        break
+
+                cv2.destroyAllWindows()
+            elif self.is_crossed_arms_pose(results.pose_landmarks):
+                self.video = self.videos[1]
+                if not self.video.isOpened():
+                    print("Erro: Arquivo de vídeo não aberto.")
+                    return frame
+
+                # Resetar para o primeiro quadro do GIF, se necessário
+                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+                start_time = time.time()  # Marcar o tempo inicial
+
+                while True:
+                    ret_vid, frame_vid = self.video.read()
+                    if ret_vid:
+                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
+                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
+
+                        # Mesclar o quadro do GIF com o da câmera
+                        alpha = 0.6  # Ajuste de transparência
+                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
+
+                        # Exibir o quadro combinado
+                        cv2.imshow('Naruto AR', blended_frame)
+
+                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
+                        elapsed_time = time.time() - start_time
+                        time_to_wait = max(0, self.frame_time - elapsed_time)
+                        time.sleep(time_to_wait)
+
+                        start_time = time.time()  # Atualizar o tempo inicial
+
+                        # Interromper o loop ao pressionar 'q'
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                    else:
+                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
+                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        break
+
+                cv2.destroyAllWindows()
+
+            
+
+            elif self.is_chidori_pose(results.pose_landmarks):
+            
+               # Verificar se o vídeo foi carregado corretamente
+                self.video = self.videos[4]
+                if not self.video.isOpened():
+                    print("Erro: Arquivo de vídeo não aberto.")
+                    return frame
+
+                # Resetar para o primeiro quadro do GIF, se necessário
+                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+                start_time = time.time()  # Marcar o tempo inicial
+
+                while True:
+                    ret_vid, frame_vid = self.video.read()
+                    if ret_vid:
+                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
+                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
+
+                        # Mesclar o quadro do GIF com o da câmera
+                        alpha = 0.8  # Ajuste de transparência
+                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
+
+                        # Exibir o quadro combinado
+                        cv2.imshow('Naruto AR', blended_frame)
+
+                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
+                        elapsed_time = time.time() - start_time
+                        time_to_wait = max(0, self.frame_time - elapsed_time)
+                        time.sleep(time_to_wait)
+
+                        start_time = time.time()  # Atualizar o tempo inicial
+
+                        # Interromper o loop ao pressionar 'q'
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                    else:
+                        
+                        break
+
+                cv2.destroyAllWindows()
+            elif self.is_lee_pose(results.pose_landmarks):
+                self.video = self.videos[2]
+                if not self.video.isOpened():
+                    print("Erro: Arquivo de vídeo não aberto.")
+                    return frame
+
+                # Resetar para o primeiro quadro do GIF, se necessário
+                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+                start_time = time.time()  # Marcar o tempo inicial
+
+                while True:
+                    ret_vid, frame_vid = self.video.read()
+                    if ret_vid:
+                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
+                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
+
+                        # Mesclar o quadro do GIF com o da câmera
+                        alpha = 0.6  # Ajuste de transparência
+                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
+
+                        # Exibir o quadro combinado
+                        cv2.imshow('Naruto AR', blended_frame)
+
+                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
+                        elapsed_time = time.time() - start_time
+                        time_to_wait = max(0, self.frame_time - elapsed_time)
+                        time.sleep(time_to_wait)
+
+                        start_time = time.time()  # Atualizar o tempo inicial
+
+                        # Interromper o loop ao pressionar 'q'
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            break
+                    else:
+                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
+                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        break
+
+                cv2.destroyAllWindows()
         return frame
 
     def detect_person_bounding_box(self, frame):
