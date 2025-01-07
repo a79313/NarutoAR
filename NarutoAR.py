@@ -1,506 +1,304 @@
 import cv2
-import mediapipe
+import mediapipe as mp
 import numpy as np
-import math
-from ultralytics import YOLO
-import time
+import json
+from PIL import Image, ImageSequence
 
 class NarutoAR:
     def __init__(self):
         self.cap = cv2.VideoCapture(0)
-
-
+        # MediaPipe
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+        self.mp_drawing = mp.solutions.drawing_utils
+        self.mp_selfie_segmentation = mp.solutions.selfie_segmentation
+        self.segmenter = self.mp_selfie_segmentation.SelfieSegmentation(model_selection=1)
         
-        # MediaPipe Pose
-        self.mp_pose = mediapipe.solutions.pose
-        self.pose = self.mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
-        self.mp_drawing = mediapipe.solutions.drawing_utils  # Para desenhar as landmarks
-
-        # Modelo YOLO
-        self.model = YOLO('models/yolo11s.pt')
-
-        # Imagem da pose
-        self.pose_images = ['assets/images/naruto-pose.png', 'assets/images/gaara-pose.png','assets/images/lee-pose.png','assets/images/guy-pose.png', 'assets/images/chidori-pose.png']
-        self.pose_image = cv2.imread(self.pose_images[0], cv2.IMREAD_UNCHANGED)
-
-        #Videos para overlay
-        self.videos = [cv2.VideoCapture('assets/videos/naruto-gif.gif'), cv2.VideoCapture('assets/videos/gaara-gif.gif'), cv2.VideoCapture('assets/videos/lee-gif.gif'), cv2.VideoCapture('assets/videos/guy-gif.gif'), cv2.VideoCapture('assets/videos/chidori-gif.gif')]
+        # Carregar o GIF do Rasengan
+        self.rasengan_gif = Image.open('assets/videos/rasengan-gif.gif')  # Substitua pelo caminho do seu GIF
+        self.frames = [frame.copy() for frame in ImageSequence.Iterator(self.rasengan_gif)]  # Armazenando as frames do GIF
+        self.frame_idx = 0  # Índice da frame do GIF a ser mostrado
         
-        self.video = self.videos[0]
+        # Background
+        self.background_images = ['assets/images/background.png']
+        self.background_image = None
 
-        #Video Normalizing
-        self.fps = self.video.get(cv2.CAP_PROP_FPS)
-        self.frame_time = 1 / self.fps
+        # Carregar o GIF da Fireball
+        self.fireball_gif = Image.open('assets/videos/fireball-gif.gif')  # Substitua pelo caminho do seu GIF
+        self.fireball_frames = [frame.copy() for frame in ImageSequence.Iterator(self.fireball_gif)]  # Armazenando as frames do GIF
+        self.fireball_frame_idx = 0  # Índice da frame do GIF a ser mostrado
+        self.fireball_active = False  # Flag para verificar se a Fireball está ativa
+        
+        # Carregar os gestos salvos
+        self.snapshots = self.load_snapshots_from_file()
 
+        # Flag para verificar se o Rasengan está ativo
+        self.rasengan_active = False
+        self.rasengan_position = None  # Posição do Rasengan na tela
+        self.rasengan_direction = None  # Direção do Rasengan
+        self.rasengan_speed = 15  # Velocidade do movimento do Rasengan
+        self.previous_wrist_position = None  # Posição anterior do
+        
+    def load_background_image(self, background_path, frame_shape):
+        # Carregar a imagem do fundo
+        background = cv2.imread(background_path)
+        
+        if background is None:
+            print("Erro: Não foi possível carregar a imagem de fundo. Verifique o caminho.")
+            return None
+        
+        # Redimensionar o fundo para cobrir toda a tela (respeitando a altura e largura do frame)
+        background_resized = cv2.resize(background, (frame_shape[1], frame_shape[0]))
+        
+        return background_resized
+    
+    def load_snapshots_from_file(self, file_path="snapshots.json"):
+        """Carrega os gestos salvos no ficheiro JSON."""
+        try:
+            with open(file_path, "r") as file:
+                return json.load(file)
+        except FileNotFoundError:
+            print(f"Ficheiro '{file_path}' não encontrado. Nenhum gesto carregado.")
+            return []
 
-    def calculate_distance(self, p1, p2):
-        """
-        Calcula a distância euclidiana entre dois pontos (p1, p2).
-        """
-        return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2)
+    def normalize_landmarks(self, hand_landmarks):
+        """Normaliza os landmarks em relação ao tamanho da mão."""
+        landmarks = [(lm.x, lm.y, lm.z) for lm in hand_landmarks.landmark]
+        x_values = [lm[0] for lm in landmarks]
+        y_values = [lm[1] for lm in landmarks]
+        z_values = [lm[2] for lm in landmarks]
 
-    def is_lee_pose(self, pose_landmarks):
-        """
-        Detecta a pose do Lee com as mãos sobre os ombros e o joelho levantado.
-        """
-        left_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
-        right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-        left_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        left_knee = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_KNEE]
-        right_knee = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_KNEE]
-        left_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP]
-        right_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP]
+        # Calcula o tamanho da mão como a diferença máxima entre os pontos
+        hand_size = max(max(x_values) - min(x_values), max(y_values) - min(y_values))
+        hand_size = max(hand_size, 1e-6)  # Evitar divisão por zero
 
-        # Verificar se as mãos estão acima dos ombros e joelhos levantados
-        hands_above_shoulders = (left_wrist.y < left_shoulder.y and right_wrist.y < right_shoulder.y)
-        left_knee_raised = left_knee.y < left_hip.y
-        right_knee_raised = right_knee.y < right_hip.y
+        # Normaliza os landmarks
+        normalized_landmarks = [(x / hand_size, y / hand_size, z / hand_size) for x, y, z in landmarks]
+        return normalized_landmarks
 
-        if hands_above_shoulders and (left_knee_raised or right_knee_raised):
-            return True
-        return False
-    def is_naruto_pose(self, pose_landmarks):
-            """
-            Detecta a pose do Naruto com base nas posições relativas dos ombros, cotovelos, pulsos
-            e a posição do torso.
-            """
-            # Obter as coordenadas dos pontos chave
-            left_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-            left_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-            left_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
-            
-            right_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-            right_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-            right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
+    def compare_with_snapshots(self, hand_landmarks, threshold=0.34):
+        """Compara a posição atual dos landmarks com os gestos armazenados no arquivo JSON."""
+        current_landmarks = self.normalize_landmarks(hand_landmarks)
 
-            # Obter as coordenadas do torso
-            left_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP]
-            right_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP]
-            
-            # Cálculo das distâncias para garantir que a pose está correta
-            left_shoulder_elbow_distance = self.calculate_distance(
-                (left_shoulder.x, left_shoulder.y),
-                (left_elbow.x, left_elbow.y)
-            )
-            
-            left_elbow_wrist_distance = self.calculate_distance(
-                (left_elbow.x, left_elbow.y),
-                (left_wrist.x, left_wrist.y)
-            )
-            
-            right_shoulder_elbow_distance = self.calculate_distance(
-                (right_shoulder.x, right_shoulder.y),
-                (right_elbow.x, right_elbow.y)
-            )
-            
-            right_elbow_wrist_distance = self.calculate_distance(
-                (right_elbow.x, right_elbow.y),
-                (right_wrist.x, right_wrist.y)
-            )
+        for snapshot in self.snapshots:
+            match = True
+            for i, (x, y, z) in enumerate(current_landmarks):
+                snapshot_x, snapshot_y, snapshot_z = snapshot["landmarks"][i]
+                dist = np.linalg.norm(np.array([x - snapshot_x, y - snapshot_y, z - snapshot_z]))
+                if dist > threshold:
+                    match = False
+                    break
+            if match:
+                return snapshot["name"]  # Retorna o nome do gesto correspondente
 
-            # Cálculo da distância entre os quadris
-            torso_distance = self.calculate_distance(
-                (left_hip.x, left_hip.y),
-                (right_hip.x, right_hip.y)
-            )
+        return None  # Nenhuma correspondência encontrada
 
-            # Critério de detecção da pose do Naruto
-            # O braço esquerdo deve estar esticado (ombro -> cotovelo -> pulso)
-            # E o braço direito deve estar dobrado, ou seja, cotovelo mais próximo do corpo
-            # O torso deve estar reto, e a distância entre os quadris deve ser significativa
-            if (left_shoulder_elbow_distance > left_elbow_wrist_distance and
-                right_shoulder_elbow_distance < right_elbow_wrist_distance and
-                torso_distance > 0.2):  # Ajuste o valor conforme necessário
-                return True
-            
-            return False
-
-
-    def is_crossed_arms_pose(self, pose_landmarks):
-        """
-        Detecta a pose de braços cruzados do Gaara.
-        """
-        left_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
-        left_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-
-        right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-        right_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-
-        # Calcular distâncias para verificar braços cruzados
-        left_wrist_right_elbow_distance = self.calculate_distance(
-            (left_wrist.x, left_wrist.y),
-            (right_elbow.x, right_elbow.y)
-        )
-
-        right_wrist_left_elbow_distance = self.calculate_distance(
-            (right_wrist.x, right_wrist.y),
-            (left_elbow.x, left_elbow.y)
-        )
-
-        # Limite de distância para braços cruzados
-        distance_threshold = 0.15  
-        if left_wrist_right_elbow_distance < distance_threshold and right_wrist_left_elbow_distance < distance_threshold:
-            return True
-
-        return False
-
-    def is_lee_pose(self, pose_landmarks):
-        """
-        Detecta a pose do Lee com as mãos sobre os ombros e o joelho levantado.
-        """
-        left_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
-        right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-
-        left_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-
-        left_knee = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_KNEE]
-        right_knee = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_KNEE]
-
-        left_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP]
-        right_hip = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_HIP]
-
-        # Verificar se as mãos estão acima dos ombros e joelhos levantados
-        hands_above_shoulders = (left_wrist.y < left_shoulder.y and right_wrist.y < right_shoulder.y)
-        left_knee_raised = left_knee.y < left_hip.y
-        right_knee_raised = right_knee.y < right_hip.y
-
-        if hands_above_shoulders and (left_knee_raised or right_knee_raised):
-            return True
-
-        return False
-
-    def is_chidori_pose(self, pose_landmarks):
-        """
-        Detecta a pose do Chidori, onde a mão esquerda segura o pulso direito.
-        """
-        left_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
-        right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-
-        left_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
-        right_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-
-        left_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-
-        # Calcular a distância entre a mão esquerda e o pulso direito
-        left_wrist_right_pulse_distance = self.calculate_distance(
-            (left_wrist.x, left_wrist.y),
-            (right_wrist.x, right_wrist.y)
-        )
-
-        chidori_threshold = 0.2  # Limite para a detecção da pose
-        if left_wrist_right_pulse_distance < chidori_threshold:
-            return True
-
-        return False
-
-    def is_guy_sensei_thumbs_up(self, pose_landmarks):
-        """
-        Detecta a pose de 'thumbs up' de Guy Sensei.
-        """
-        right_shoulder = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        right_elbow = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_ELBOW]
-        right_wrist = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_WRIST]
-        right_thumb = pose_landmarks.landmark[self.mp_pose.PoseLandmark.RIGHT_THUMB]
-
-        nose = pose_landmarks.landmark[self.mp_pose.PoseLandmark.NOSE]
-
-        right_wrist_elbow_distance = self.calculate_distance(
-            (right_wrist.x, right_wrist.y),
-            (right_elbow.x, right_elbow.y)
-        )
-
-        thumb_angle = math.degrees(math.atan2(right_thumb.y - right_wrist.y, right_thumb.x - right_wrist.x))
-
-        nose_wrist_distance = self.calculate_distance(
-            (nose.x, nose.y),
-            (right_wrist.x, right_wrist.y)
-        )
-
-        if thumb_angle < 45 and nose_wrist_distance < 0.3 and right_wrist_elbow_distance < 0.3:
-            return True
-
-        return False
-    def detect_pose(self, frame):
+    def detect_hand_landmarks(self, frame):
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.pose.process(rgb_frame)  # Processar o quadro com o Pose Detector
-
-        if results.pose_landmarks:
-            cords = self.detect_person_bounding_box(frame)
-            # Desenhar as landmarks da pose
-            #self.mp_drawing.draw_landmarks(frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
-            if self.is_naruto_pose(results.pose_landmarks):
-                self.video = self.videos[0]
-                if not self.video.isOpened():
-                    print("Erro: Arquivo de vídeo não aberto.")
-                    return frame
-
-                # Resetar para o primeiro quadro do GIF, se necessário
-                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-                start_time = time.time()  # Marcar o tempo inicial
-
-                while True:
-                    ret_vid, frame_vid = self.video.read()
-                    if ret_vid:
-                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
-                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
-
-                        # Mesclar o quadro do GIF com o da câmera
-                        alpha = 0.6  # Ajuste de transparência
-                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
-
-                        # Exibir o quadro combinado
-                        cv2.imshow('Naruto AR', blended_frame)
-
-                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
-                        elapsed_time = time.time() - start_time
-                        time_to_wait = max(0, self.frame_time - elapsed_time)
-                        time.sleep(time_to_wait)
-
-                        start_time = time.time()  # Atualizar o tempo inicial
-
-                        # Interromper o loop ao pressionar 'q'
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    else:
-                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
-                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        break
-
-                cv2.destroyAllWindows()
-            elif self.is_guy_sensei_thumbs_up(results.pose_landmarks):
-                self.video = self.videos[3]
-                # Verificar se o vídeo foi carregado corretamente
-                if not self.video.isOpened():
-                    print("Erro: Arquivo de vídeo não aberto.")
-                    return frame
-
-                # Resetar para o primeiro quadro do GIF, se necessário
-                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-                start_time = time.time()  # Marcar o tempo inicial
-
-                while True:
-                    ret_vid, frame_vid = self.video.read()
-                    if ret_vid:
-                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
-                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
-
-                        # Mesclar o quadro do GIF com o da câmera
-                        alpha = 0.6  # Ajuste de transparência
-                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
-
-                        # Exibir o quadro combinado
-                        cv2.imshow('Naruto AR', blended_frame)
-
-                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
-                        elapsed_time = time.time() - start_time
-                        time_to_wait = max(0, self.frame_time - elapsed_time)
-                        time.sleep(time_to_wait)
-
-                        start_time = time.time()  # Atualizar o tempo inicial
-
-                        # Interromper o loop ao pressionar 'q'
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    else:
-                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
-                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        break
-
-                cv2.destroyAllWindows()
-            elif self.is_crossed_arms_pose(results.pose_landmarks):
-                self.video = self.videos[1]
-                if not self.video.isOpened():
-                    print("Erro: Arquivo de vídeo não aberto.")
-                    return frame
-
-                # Resetar para o primeiro quadro do GIF, se necessário
-                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-                start_time = time.time()  # Marcar o tempo inicial
-
-                while True:
-                    ret_vid, frame_vid = self.video.read()
-                    if ret_vid:
-                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
-                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
-
-                        # Mesclar o quadro do GIF com o da câmera
-                        alpha = 0.6  # Ajuste de transparência
-                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
-
-                        # Exibir o quadro combinado
-                        cv2.imshow('Naruto AR', blended_frame)
-
-                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
-                        elapsed_time = time.time() - start_time
-                        time_to_wait = max(0, self.frame_time - elapsed_time)
-                        time.sleep(time_to_wait)
-
-                        start_time = time.time()  # Atualizar o tempo inicial
-
-                        # Interromper o loop ao pressionar 'q'
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    else:
-                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
-                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        break
-
-                cv2.destroyAllWindows()
-
-            
-
-            elif self.is_chidori_pose(results.pose_landmarks):
-            
-               # Verificar se o vídeo foi carregado corretamente
-                self.video = self.videos[4]
-                if not self.video.isOpened():
-                    print("Erro: Arquivo de vídeo não aberto.")
-                    return frame
-
-                # Resetar para o primeiro quadro do GIF, se necessário
-                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-                start_time = time.time()  # Marcar o tempo inicial
-
-                while True:
-                    ret_vid, frame_vid = self.video.read()
-                    if ret_vid:
-                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
-                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
-
-                        # Mesclar o quadro do GIF com o da câmera
-                        alpha = 0.8  # Ajuste de transparência
-                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
-
-                        # Exibir o quadro combinado
-                        cv2.imshow('Naruto AR', blended_frame)
-
-                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
-                        elapsed_time = time.time() - start_time
-                        time_to_wait = max(0, self.frame_time - elapsed_time)
-                        time.sleep(time_to_wait)
-
-                        start_time = time.time()  # Atualizar o tempo inicial
-
-                        # Interromper o loop ao pressionar 'q'
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    else:
-                        
-                        break
-
-                cv2.destroyAllWindows()
-            elif self.is_lee_pose(results.pose_landmarks):
-                self.video = self.videos[2]
-                if not self.video.isOpened():
-                    print("Erro: Arquivo de vídeo não aberto.")
-                    return frame
-
-                # Resetar para o primeiro quadro do GIF, se necessário
-                self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-
-                start_time = time.time()  # Marcar o tempo inicial
-
-                while True:
-                    ret_vid, frame_vid = self.video.read()
-                    if ret_vid:
-                        # Redimensionar o quadro do GIF para corresponder ao tamanho do quadro da câmera
-                        frame_vid = cv2.resize(frame_vid, (frame.shape[1], frame.shape[0]))
-
-                        # Mesclar o quadro do GIF com o da câmera
-                        alpha = 0.6  # Ajuste de transparência
-                        blended_frame = cv2.addWeighted(frame_vid, alpha, frame, 1 - alpha, 0)
-
-                        # Exibir o quadro combinado
-                        cv2.imshow('Naruto AR', blended_frame)
-
-                        # Aguardar o tempo necessário para sincronizar com o FPS do GIF
-                        elapsed_time = time.time() - start_time
-                        time_to_wait = max(0, self.frame_time - elapsed_time)
-                        time.sleep(time_to_wait)
-
-                        start_time = time.time()  # Atualizar o tempo inicial
-
-                        # Interromper o loop ao pressionar 'q'
-                        if cv2.waitKey(1) & 0xFF == ord('q'):
-                            break
-                    else:
-                        print("Aviso: Não foi possível ler o quadro do GIF. Reiniciando o vídeo.")
-                        self.video.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        break
-
-                cv2.destroyAllWindows()
-        return frame
-
-    def detect_person_bounding_box(self, frame):
-        results = self.model.predict(frame)
-        best_box = None
-        best_confidence = 0
-
-        for result in results:
-            if result.boxes:
-                for box in result.boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    conf = box.conf[0].item()
-                    cls = int(box.cls[0].item())
-
-                    if cls == 0 and conf > best_confidence:  # Apenas pessoas com confiança alta
-                        best_confidence = conf
-                        best_box = (int(x1), int(y1), int(x2), int(y2))
-
-        if best_box:
-            x1, y1, x2, y2 = best_box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            return x1, y1, x2, y2
-        return None, None, None, None
-
-    def resize_image(self, image, cords):
-        x1, y1, x2, y2 = cords
-        height, width = int(y2 - y1), int(x2 - x1)
-        image_height, image_width = image.shape[:2]
-
-        scale = min(width / image_width, height / image_height)
-        new_width = int(image_width * scale)
-        new_height = int(image_height * scale)
-
-        resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
-        return resized_image
-
-    def overlay_pose_image(self, frame, pose_image, cords):
-        x1, y1, x2, y2 = cords
-        overlay = cv2.resize(pose_image, (x2 - x1, y2 - y1))
-
-        # Separar os canais de cor e alfa (se disponível)
-        if overlay.shape[2] == 4:  # Verificar se há canal alfa
-            b, g, r, alpha = cv2.split(overlay)
-            alpha = alpha / 255.0
-
-            for c in range(0, 3):  # Mesclar os canais BGR
-                frame[y1:y2, x1:x2, c] = frame[y1:y2, x1:x2, c] * (1 - alpha) + overlay[:, :, c] * alpha
+        results = self.hands.process(rgb_frame)
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+        return frame, results
+    
+    def detect_jutsu(self, hand_landmarks):
+        """Compara o movimento atual com os gestos salvos no arquivo .json"""
+        gesture_name = self.compare_with_snapshots(hand_landmarks)
+        if gesture_name:
+            return f"Gesto Reconhecido: {gesture_name}"
         else:
-            frame[y1:y2, x1:x2] = overlay
+            return "Nenhum gesto reconhecido"
 
-    def process_frame(self, frame):
-        frame = self.detect_pose(frame)
+    def overlay_rasengan(self, frame, hand_landmarks):
+        """Sobrepõe o GIF do Rasengan na palma da mão."""
+        # Aqui estamos pegando o primeiro landmark da mão, que é uma boa referência para a posição da palma
+        palm_x = int(hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST].x * frame.shape[1])
+        palm_y = int(hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST].y * frame.shape[0])
+
+        # Redimensiona o GIF do Rasengan para que caiba na palma da mão
+        rasengan = self.frames[self.frame_idx]
+        rasengan = rasengan.convert("RGBA")
+        rasengan_resized = rasengan.resize((100, 100))  # Ajuste o tamanho conforme necessário
+
+        # Converte o frame para formato RGBA
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        frame_pil.paste(rasengan_resized, (palm_x - 50, palm_y - 50), rasengan_resized)  # Desloca para o centro da palma
+
+        # Converte de volta para o formato OpenCV
+        frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+        
+        # Atualiza o índice para a próxima frame do GIF
+        self.frame_idx = (self.frame_idx + 1) % len(self.frames)
+        
         return frame
+    def overlay_fireball(self, frame, hand_landmarks):
+        """Sobrepõe o GIF da Fireball na palma da mão."""
+        # Aqui estamos pegando o primeiro landmark da mão, que é uma boa referência para a posição da palma
+        palm_x = int(hand_landmarks.landmark[self.mp_hands.HandLandmark.WRIST].x * frame.shape[1])
+        palm_y = int(hand_landmarks.landmark[self.mp_hands
+        .HandLandmark.WRIST].y * frame.shape[0])
+
+        # Redimensiona o GIF da Fireball para que caiba na palma da mão
+        fireball = self.fireball_frames[self.fireball_frame_idx]
+        fireball = fireball.convert("RGBA")
+        fireball_resized = fireball.resize((100, 100))  # Ajuste o tamanho conforme necessário
+
+        # Converte o frame para formato RGBA
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        frame_pil.paste(fireball_resized, (palm_x - 50, palm_y - 50), fireball_resized)  # Desloca para o centro da palma
+
+        # Converte de volta para o formato OpenCV
+        frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+
+        # Atualiza o índice para a próxima frame do GIF
+        self.fireball_frame_idx = (self.fireball_frame_idx + 1) % len(self.fireball_frames)
+
+        return frame
+    def replace_background(self, frame):
+        if self.background_image is None:
+            self.background_image = cv2.imread(self.background_images[0])
+        
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.segmenter.process(frame_rgb)
+
+        # Cria a máscara binária (pessoa vs. fundo)
+        mask = results.segmentation_mask > 0.5
+        background_resized = cv2.resize(self.background_image, (frame.shape[1], frame.shape[0]))
+
+        # Aplica a máscara no frame
+        output_image = np.where(mask[..., None], frame, background_resized)
+
+        return output_image
+
+    def extract_person_from_frame(self, frame, contour_coords):
+        # Criando uma máscara binária da pessoa
+        mask_person = np.zeros_like(frame[:, :, 0], dtype=np.uint8)
+        
+        for contour in contour_coords:
+            # Criando uma máscara para o contorno
+            cv2.drawContours(mask_person, [contour], -1, 255, thickness=cv2.FILLED)
+        
+        # Usando a máscara para copiar a pessoa da imagem original
+        person_region = cv2.bitwise_and(frame, frame, mask=mask_person)
+        return person_region, mask_person
+
+    def create_clones(self, frame):
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Processando a segmentação de fundo
+        results = self.segmenter.process(frame_rgb)
+        
+        # Máscara binária da segmentação (pessoa vs fundo)
+        mask = results.segmentation_mask
+        
+        # Criando a máscara binária com um limiar de 0.5 (só a pessoa)
+        mask = mask > 0.5  # 1 para a pessoa e 0 para o fundo
+        
+        # Carregando e redimensionando o fundo comum
+        common_background = self.load_background_image(self.background_images[0], frame.shape)
+
+        # Verificar se o fundo foi carregado corretamente
+        if common_background is None:
+            print('Erro ao carregar o fundo comum.')
+            return frame
+
+        # Encontrar os contornos da máscara binária (onde há branco, ou seja, a pessoa)
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # Inicializando uma lista para armazenar as coordenadas dos contornos
+        contour_coords = []
+
+        # Para cada contorno encontrado, armazenamos as coordenadas
+        for contour in contours:
+            if cv2.contourArea(contour) > 1000:  # Filtra contornos pequenos
+                contour_coords.append(contour)  # Guardando as coordenadas dos contornos
+
+        # Extraindo a pessoa do frame (máscara da pessoa)
+        person_region, person_mask = self.extract_person_from_frame(frame, contour_coords)
+
+        # Dividindo a largura do frame em 3 partes
+        clone_width = frame.shape[1] // 3
+        clone_height = frame.shape[0]
+
+        # Garantindo que a largura total seja coberta (evitando diferenças de pixels)
+        common_background_sections = [
+            common_background[:, 0:clone_width],                # Primeira seção do fundo
+            common_background[:, clone_width:2*clone_width],   # Segunda seção do fundo
+            common_background[:, 2*clone_width:frame.shape[1]] # Terceira seção do fundo (cobre o resto)
+        ]
+
+        # Criando as três partes da tela com a pessoa clonada sobre os fundos
+        final_frame = np.zeros_like(frame)
+
+        for i in range(3):
+            # Calculando onde colocar a ROI (pessoa) na tela dividida
+            x_start = i * clone_width
+            x_end = (i + 1) * clone_width if i < 2 else frame.shape[1]  # Última seção cobre o restante
+
+            # Redimensionando a pessoa para caber na largura de cada parte da tela
+            clone_section = cv2.resize(person_region, (x_end - x_start, clone_height))
+
+            # Misturando a pessoa com a respectiva seção do fundo comum
+            blended_section = np.where(
+                clone_section > 0,  # Onde há pessoa
+                clone_section,      # Mostra a pessoa
+                common_background_sections[i]  # Mostra o fundo
+            )
+
+            # Colocando a seção mesclada no frame final
+            final_frame[:, x_start:x_end] = blended_section
+
+        return final_frame
+
 
 if __name__ == '__main__':
     naruto_ar = NarutoAR()
 
+    # Verifique se a câmera foi aberta corretamente
+    if not naruto_ar.cap.isOpened():
+        print("Erro: Não foi possível acessar a câmera.")
+        exit()
+
     while True:
         ret, frame = naruto_ar.cap.read()
-        if not ret:
+        if not ret or frame is None:
+            print("Erro: Não foi possível capturar o frame da câmera.")
             break
 
-        frame = naruto_ar.process_frame(frame)
+        # Detecta os landmarks
+        frame, results = naruto_ar.detect_hand_landmarks(frame)
+        if results and results.multi_hand_landmarks:
+            hand_landmarks = results.multi_hand_landmarks[0]
+            
+            # Detecta o gesto e mostra o nome
+            jutsu = naruto_ar.detect_jutsu(hand_landmarks)
+            cv2.putText(frame, jutsu, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+            if 'clones' in jutsu:
+                frame = naruto_ar.create_clones(frame)
 
-        cv2.imshow('Naruto AR', frame)
+            # Se o gesto for "rasengan", ativa o efeito
+            if "rasengan" in jutsu:
+                print('Rasengan detectado')
+                naruto_ar.rasengan_active = True
+
+            if 'circle' in jutsu:
+                print('Fireball detectado')
+                naruto_ar.fireball_active = True
+
+        # Se o Rasengan estiver ativo, sobrepõe o GIF
+        if naruto_ar.rasengan_active and results and results.multi_hand_landmarks:
+            frame = naruto_ar.overlay_rasengan(frame, results.multi_hand_landmarks[0])
+        if naruto_ar.fireball_active and results and results.multi_hand_landmarks:
+            frame = naruto_ar.overlay_fireball(frame, results.multi_hand_landmarks[0])
+
+
+        # Exibe o frame
+        try:
+            cv2.imshow('Naruto AR', frame)
+        except cv2.error as e:
+            print(f"Erro ao exibir o frame: {e}")
+            break
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
