@@ -43,22 +43,7 @@ class NarutoARv2:
       # Posição anterior da mão
       self.prev_position = None
 
-  def draw_iris(self, frame, landmarks):
-    h, w = frame.shape[:2]
-    for eye in ['left', 'right']:
-      iris_points = [
-        (int(landmarks.landmark[i].x * w), int(landmarks.landmark[i].y * h))
-        for i in self.iris_indices[eye]
-      ]
-
-      for point in iris_points:
-        cv2.circle(frame, point, 2, (0, 255, 0), -1)  # Desenha os pontos da íris
-
-      # Desenhar contorno da íris
-      iris_contour = np.array(iris_points, dtype=np.int32)
-      cv2.polylines(frame, [iris_contour], isClosed=True, color=(255, 0, 0), thickness=1)
-
-    return frame
+  
 
   def get_eye_landmarks(self, face_landmarks, frame):
     """Obtém as coordenadas dos olhos a partir dos marcos faciais."""
@@ -91,7 +76,7 @@ class NarutoARv2:
       return cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGBA2BGR)
 
   def process_face_mesh(self, frame):
-      """Processa a malha facial no frame."""
+      
       rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
       return self.face_mesh.process(rgb_frame)
      
