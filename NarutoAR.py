@@ -3,12 +3,44 @@ import mediapipe
 import numpy as np
 import math
 import json
+from PIL import ImageSequence, Image
 
 class NarutoAR:
     def __init__(self):
         self.cap = cv2.VideoCapture(0)
         
+        self.cap = cv2.VideoCapture(0)
+
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         
+
+
+        self.gifs = [Image.open('assets/videos/rasengan-gif.gif'), Image.open('assets/videos/fireball-gif.gif'), Image.open('assets/videos/sharigan-gif.gif')]
+        self.frames = [[frame.copy() for frame in ImageSequence.Iterator(self.gifs[0])],
+                        [frame.copy() for frame in ImageSequence.Iterator(self.gifs[1])], [frame.copy() for frame in ImageSequence.Iterator(self.gifs[2])]]
+        self.frame_idx = 0
+
+
+        try:
+            with open("snapshots.json", "r") as file:
+                self.snapshots = json.load(file)
+        except FileNotFoundError:
+            print("Ficheiro 'snapshots.json' não encontrado. Nenhum gesto carregado.")
+
+        # Posição anterior da mão
+        self.prev_position = None
+
+
+    def normalize_landmarks(self, hand_landmarks):
+        """Normaliza os pontos de referência da mão."""
+        landmarks = [(lm.x, lm.y, lm.z) for lm in hand_landmarks.landmark]
+        x_values = [lm[0] for lm in landmarks]
+        y_values = [lm[1] for lm in landmarks]
+        hand_size = max(max(x_values) - min(x_values), max(y_values) - min(y_values))
+        hand_size = max(hand_size, 1e-6)
+        normalized_landmarks = [(x / hand_size, y / hand_size, z / hand_size) for x, y, z in landmarks]
+        return normalized_landmarks
         # MediaPipe Pose
         self.mp_pose = mediapipe.solutions.pose
         self.pose = self.mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
