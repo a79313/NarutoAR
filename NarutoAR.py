@@ -5,6 +5,7 @@ import math
 import json
 from PIL import ImageSequence, Image
 import time
+from ultralytics import YOLO
 
 
 
@@ -13,21 +14,50 @@ class NarutoAR:
     def __init__(self):
         self.cap = cv2.VideoCapture(0)
 
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         # MediaPipe Pose
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
         self.mp_drawing = mp.solutions.drawing_utils
-
+                                                            #MEDIAPIPE
+        ###################################################MediaPipe Hands############################################################
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.7)
+        
+        ############################################### MediaPipe Selfie Segmentation ##############################################
+        self.mp_selfie_segmentation = mp.solutions.selfie_segmentation
+        self.segmenter = self.mp_selfie_segmentation.SelfieSegmentation(model_selection=1)
+        
+        ######################################### MediaPipe Face Detection ###################################################################
+        self.mp_face_detection = mp.solutions.face_detection
+        self.face_detection = self.mp_face_detection.FaceDetection(min_detection_confidence=0.7)
+                                                            #YOLO
+        self.model = YOLO('models/yolo11s.pt')
+        # Images
+        self.background_images = ['assets/images/background.png']
+        self.background_image = None
+        self.object_images = {
+            76: 'assets/images/shuriken.png',
+            45: 'assets/images/bowl.png',
+            16: 'assets/images/dog.png',
+            24: 'assets/images/backpack.png',
+            42: 'assets/images/kunai.png',
+        }
+        self.loaded_images = {cls: cv2.imread(path, cv2.IMREAD_UNCHANGED) for cls, path in self.object_images.items()}
         self.overlay_images = {
             "gaara": cv2.imread("assets/images/gaara-pose.png", cv2.IMREAD_UNCHANGED),
             "lee": cv2.imread("assets/images/lee-pose.png", cv2.IMREAD_UNCHANGED),
             "guy": cv2.imread("assets/images/guy.pose.png", cv2.IMREAD_UNCHANGED),
             "naruto": cv2.imread("assets/images/naruto-pose.png", cv2.IMREAD_UNCHANGED),
-            "chidori": cv2.imread("assets/images/chidori-pose.png", cv2.IMREAD_UNCHANGED)
+            "chidori": cv2.imread("assets/images/chidori-pose.png", cv2.IMREAD_UNCHANGED),
+            "clones": cv2.imread("assets/images/naruto-clones-pose.png", cv2.IMREAD_UNCHANGED)
         }
-
+        self.overlay_clones_images = {
+            "gaara": cv2.imread("assets/images/gaara-pose-clones.png", cv2.IMREAD_UNCHANGED),
+            "lee": cv2.imread("assets/images/lee-pose-clones.png", cv2.IMREAD_UNCHANGED),
+            "guy": cv2.imread("assets/images/guy.pose-clones.png", cv2.IMREAD_UNCHANGED),
+            "naruto": cv2.imread("assets/images/naruto-clones-pose.png", cv2.IMREAD_UNCHANGED),
+            "chidori": cv2.imread("assets/images/chidori-pose-clones.png", cv2.IMREAD_UNCHANGED)
+        }
         self.gifs = [Image.open('assets/videos/rasengan-gif.gif'), Image.open('assets/videos/fireball-gif.gif'), Image.open('assets/videos/sharigan-gif.gif'), Image.open('assets/videos/chidori.gif')]
         self.frames = [
             [frame.copy() for frame in ImageSequence.Iterator(self.gifs[0])],
@@ -88,9 +118,17 @@ class NarutoAR:
     def detect_jutsu(self, hand_landmarks):
         """Detecta o jutsu realizado com base nos landmarks normalizados."""
         if hand_landmarks:
-            normalized_landmarks = self.normalize_landmarks(hand_landmarks)
-            return self.compare_hand_signs(normalized_landmarks)
+            # Converter landmarks para listas de [x, y, z]
+            formatted_landmarks = [(lm.x, lm.y, lm.z) for lm in hand_landmarks]
+            normalized_landmarks = self.normalize_landmarks(formatted_landmarks)
+            return normalized_landmarks
         return None
+
+    
+    def remove_alpha_channel_from_image(self, image):
+        if image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+        return image
 
     def detect_hand_landmarks(self, frame):
         """Detecta landmarks das mãos e desenha sobre o frame."""
@@ -109,6 +147,61 @@ class NarutoAR:
             self.mp_drawing.draw_landmarks(frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
         return frame, results
 
+
+    def resize_object(self, object_img, x1, y1 ,x2 ,y2):
+        width, height = x2 - x1, y2 - y1
+        if object_img.shape[2] == 4:
+            alpha = object_img[:, :, 3] / 255.0
+            cords = cv2.findNonZero(alpha)
+            if cords is not None:
+                x, y, w, h = cv2.boundingRect(cords)
+                object_img = object_img[y:y + h, x:x + w]  # Crop the object to remove transparency
+        resized_object = cv2.resize(object_img, (width, height))
+        return resized_object
+    def apply_object_in_frame(self, roi, object_img):
+        # Verifique se o tamanho da imagem do objeto e a ROI são compatíveis
+        object_resized = cv2.resize(object_img, (roi.shape[1], roi.shape[0]))
+
+        # Aplicar a imagem do objeto na ROI
+        for i in range(3):  # Trabalhando com os 3 canais de cor (R, G, B)
+            roi[:, :, i] = np.where(object_resized[:, :, 0] == 0, roi[:, :, i], object_resized[:, :, i])
+
+        return roi
+
+    def detect_objects(self, frame):
+        # Realizar a detecção com YOLO
+        results = self.model(frame)
+
+        for result in results[0].boxes:
+            x1, y1, x2, y2 = map(int, result.xyxy[0])  # Coordenadas da caixa delimitadora
+            conf = result.conf[0]  # Confiança da detecção
+            cls = int(result.cls[0])  # Classe detectada
+
+            # Verificar se a classe está no dicionário
+            if cls in self.object_images:
+                roi = frame[y1:y2, x1:x2]
+                object_img = self.loaded_images.get(cls)
+
+                # Verificar se a imagem foi carregada corretamente
+                if object_img is not None and object_img.shape[2] == 4:
+                    # Redimensionar e aplicar o objeto na ROI
+                    resized_object = self.resize_object(object_img, x1, y1, x2, y2)
+                    roi = self.apply_object_in_frame(roi, resized_object)
+
+                    # Atualizar o frame com o ROI processado
+                    frame[y1:y2, x1:x2] = roi
+
+                # Adicionar rótulo e caixa delimitadora
+                label = self.model.names[cls]
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, f'{label} ({conf:.2f})', (x1, y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        return frame
+
+
+
+    
     
 
     def compare_pose(self, landmarks):
@@ -173,30 +266,7 @@ class NarutoAR:
 
         return frame
 
-    def create_aura_mask(self, image):
-        """Cria uma máscara onde somente as partes coloridas do PNG são consideradas."""
-        bgr = image[:, :, :3]
-        alpha = image[:, :, 3]
-
-        # Criar uma máscara a partir do canal alfa
-        _, binary_mask = cv2.threshold(alpha, 1, 255, cv2.THRESH_BINARY)
-
-        # Encontrar contornos na máscara
-        contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        # Criar uma imagem para desenhar os contornos da aura
-        aura = np.zeros_like(bgr)
-
-        # Desenhar contornos com uma cor azul brilhante
-        cv2.drawContours(aura, contours, -1, (255, 0, 0), thickness=10)
-
-        # Aplicar desfoque para suavizar a aura
-        aura = cv2.GaussianBlur(aura, (25, 25), 0)
-
-        # Combinar a aura com a imagem original
-        aura_with_mask = cv2.addWeighted(bgr, 1, aura, 0.5, 0)
-
-        return aura_with_mask
+    
 
     def load_snapshots_from_file(self, filename):
         """Carrega os snapshots de um arquivo JSON."""
@@ -239,7 +309,36 @@ class NarutoAR:
                 print(f"Pose detected: {pose_name}")
             return pose_name
         return None
-    
+    def create_aura_mask(self, image, color):
+        """Cria uma máscara onde somente as bordas do PNG são consideradas."""
+        if image.shape[2] != 4:
+            print("Erro: A imagem precisa de um canal alfa.")
+            return image
+
+        image_gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        image_smooth = cv2.GaussianBlur(image_gray, (5, 5), 0)
+        edges = cv2.Canny(image_smooth, 50, 100)
+
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros_like(image)
+        cv2.drawContours(mask, contours, -1, color, thickness=10)
+        aura = cv2.GaussianBlur(mask, (25, 25), 0)
+
+        return aura
+
+    def apply_aura(self, characters_frame, hand_sign):
+        """Aplica a aura azul ao redor do personagem."""
+        if characters_frame is not None:
+            if characters_frame.shape[2] != 4:
+                characters_frame = cv2.cvtColor(characters_frame, cv2.COLOR_BGR2BGRA)
+            if hand_sign == "fireball" or hand_sign == "circle":
+                aura = self.create_aura_mask(characters_frame, (0, 0, 255))
+            else:
+
+                aura = self.create_aura_mask(characters_frame, (255, 0, 0))
+            combined = cv2.addWeighted(characters_frame, 1, aura, 0.5, 0)
+            return combined
+        return characters_frame  
 def resize_image_to_fit(image, window_width, window_height):
     """Resize the image to fit within the given window dimensions while maintaining aspect ratio."""
     h, w = image.shape[:2]
@@ -255,40 +354,109 @@ if __name__ == '__main__':
     window_width, window_height = 500, 500  # Set window dimensions
     cv2.namedWindow('Characters', cv2.WINDOW_NORMAL)
     cv2.resizeWindow('Characters', window_width, window_height)
+
     hand_snapshots = naruto_ar.load_snapshots_from_file('hand_snapshots.json')
     pose_snapshots = naruto_ar.load_snapshots_from_file('pose-landmarks.json')
     characters_frame = None
+    current_mode = 'poses'
+    current_pose_name = None
+
     while True:
         ret, frame = naruto_ar.cap.read()
         if not ret:
             break
 
-        # Detecta os landmarks da pose
-        cv2.imshow('Naruto AR', frame)
-        if cv2.waitKey(1) & 0xFF == ord('p'):
+        key = cv2.waitKey(1) & 0xFF
+        # Alternar entre modos
+        if key == ord('o'):
+            current_mode = "objects" if current_mode != "objects" else "none"
+            print(f"Modo atual: {'Deteção de Objetos' if current_mode == 'objects' else 'Nenhum'}")
+        elif key == ord('p'):
+            current_mode = "poses" if current_mode != "poses" else "none"
+            print(f"Modo atual: {'Deteção de Poses' if current_mode == 'poses' else 'Nenhum'}")
+        elif key == ord('h'):
+            current_mode = "hands" if current_mode != "hands" else "none"
+            print(f"Modo atual: {'Deteção de Mãos' if current_mode == 'hands' else 'Nenhum'}")
+        # Processar o modo atual
+        if current_mode == "objects":
+            results = naruto_ar.model(frame)
+
+            if results:
+                for result in results[0].boxes:
+                    x1, y1, x2, y2 = map(int, result.xyxy[0])  # Coordenadas da caixa delimitadora
+                    cls = int(result.cls[0])  # Classe detectada
+                    conf = result.conf[0]  # Confiança da detecção
+
+                    print(f"Objeto detectado: Classe {cls}, Confiança: {conf:.2f}")
+
+                    if cls in naruto_ar.object_images:
+                        object_img = naruto_ar.loaded_images.get(cls)
+                        if object_img is not None:
+                            print(f"Classe {cls} encontrada no dicionário. Carregando imagem...")
+                            if object_img.shape[2] == 4:
+                                object_img = cv2.cvtColor(object_img, cv2.COLOR_BGRA2BGR)
+
+                            characters_frame = resize_image_to_fit(object_img, window_width, window_height)
+                        else:
+                            print(f"Erro: Imagem do objeto para classe {cls} não carregada.")
+                    else:
+                        print(f"Classe {cls} não encontrada no dicionário de imagens.")
+
+        elif current_mode == "poses":
             frame, pose_results = naruto_ar.detect_pose_landmarks(frame)
-        # Verifica se resultados existem e passa para o método
             if pose_results and pose_results.pose_landmarks:
                 pose_name = naruto_ar.detect_and_compare_pose(pose_results, pose_snapshots)
-                pose_name = "guy"
-            
-                overlay_image = naruto_ar.overlay_images[pose_name]
-                if overlay_image is not None:
-                    overlay_image = resize_image_to_fit(overlay_image, window_width, window_height)
-                    characters_frame = overlay_image
-                else:
-                    print(f"Erro: Imagem para '{pose_name}' não carregada.")
-            
-        if cv2.waitKey(1) & 0xFF == ord('o'):
-            
-        # Mostra o frame
+                #pose_name = "guy"
+                if pose_name in naruto_ar.overlay_images:
+                    overlay_image = naruto_ar.overlay_images[pose_name]
+                    current_pose_name = pose_name
+                    if overlay_image is not None:
+                        # Redimensionar para a janela Characters
+                        characters_frame = resize_image_to_fit(overlay_image, window_width, window_height)
+                    else:
+                        print(f"Erro: Imagem para '{pose_name}' não carregada.")
+        elif current_mode == "hands":
+            previous_hand_sign = None
+            frame, hands_results = naruto_ar.detect_hand_landmarks(frame)
+            if hands_results and hands_results.multi_hand_landmarks:
+                hand_landmarks = hands_results.multi_hand_landmarks[0]
+                hand_landmarks = naruto_ar.detect_jutsu(hand_landmarks.landmark)
+                hand_sign = None  # Inicie com None para evitar valores antigos
+                if hand_landmarks:
+                    hand_sign = naruto_ar.compare_with_snapshots(hand_landmarks, hand_snapshots)
+
+                
+                if hand_sign == "clones":
+                    previous_hand_sign = "clones"
+                    overlay_image = naruto_ar.overlay_clones_images[pose_name]
+                    if overlay_image is not None:
+                        # Redimensionar para a janela Characters
+                        characters_frame = resize_image_to_fit(overlay_image, window_width, window_height)
+                    else:
+                        print(f"Erro: Imagem para '{hand_sign}' não carregada.")
+                elif hand_sign == "fist" and previous_hand_sign != "fist":
+                    characters_frame = resize_image_to_fit(overlay_image, window_width, window_height)
+                    previous_hand_sign = "fist"
+                    characters_frame = naruto_ar.apply_aura(characters_frame, hand_sign)
+                elif hand_sign == "fireball" or hand_sign == "circle" and previous_hand_sign != "fireballandcircle":
+                    characters_frame = resize_image_to_fit(overlay_image, window_width, window_height)
+
+                    previous_hand_sign = "fireballandcircle"
+                    characters_frame = naruto_ar.apply_aura(characters_frame, hand_sign)
+
+                    
+
+                    
+        # Exibir na janela Characters
         if characters_frame is not None:
             cv2.imshow('Characters', characters_frame)
-        
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+
+        # Exibir o feed principal
+        cv2.imshow('Naruto AR', frame)
+
+        # Fechar o programa ao pressionar 'Q'
+        if key == ord('q'):
             break
 
     naruto_ar.cap.release()
     cv2.destroyAllWindows()
-
-
