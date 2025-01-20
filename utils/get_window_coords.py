@@ -11,7 +11,7 @@ cv2.resizeWindow("Minha Janela", 500, 500)
 cv2.setMouseCallback("Minha Janela", mouse_callback)
 
 # Carrega e redimensiona uma imagem (ou um frame vazio)
-image = cv2.imread('assets/images/naruto-pose.png')  # Substitua pelo caminho da sua imagem
+image = cv2.imread('assets/images/chidori-pose.png')  # Substitua pelo caminho da sua imagem
 if image is None:
     image = 255 * (image := cv2.imread('', 1))  # Cria uma imagem branca se não encontrar nenhuma
 else:
